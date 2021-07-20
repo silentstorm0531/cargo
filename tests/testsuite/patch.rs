@@ -442,6 +442,55 @@ fn unused() {
 }
 
 #[cargo_test]
+fn prefer_patch_version() {
+    Package::new("bar", "0.1.2").publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                authors = []
+
+                [dependencies]
+                bar = "0.1.0"
+
+                [patch.crates-io]
+                bar = { path = "bar" }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.1"))
+        .file("bar/src/lib.rs", "")
+        .build();
+
+    p.cargo("build")
+        .with_stderr(
+            "\
+[UPDATING] `[ROOT][..]` index
+[COMPILING] bar v0.1.1 ([CWD]/bar)
+[COMPILING] foo v0.0.1 ([CWD])
+[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
+",
+        )
+        .run();
+    p.cargo("build")
+        .with_stderr(
+            "\
+[FINISHED] [..]
+",
+        )
+        .run();
+
+    // there should be no patch.unused in the toml file
+    let lock = p.read_lockfile();
+    let toml: toml::Value = toml::from_str(&lock).unwrap();
+    assert!(toml.get("patch").is_none());
+}
+
+#[cargo_test]
 fn unused_from_config() {
     Package::new("bar", "0.1.0").publish();
 
@@ -782,6 +831,102 @@ fn add_ignored_patch() {
 [COMPILING] bar v0.1.1 ([CWD]/bar)
 [COMPILING] foo v0.0.1 ([CWD])
 [FINISHED] dev [..]
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn add_patch_with_features() {
+    Package::new("bar", "0.1.0").publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "0.0.1"
+            authors = []
+
+            [dependencies]
+            bar = "0.1.0"
+
+            [patch.crates-io]
+            bar = { path = 'bar', features = ["some_feature"] }
+        "#,
+        )
+        .file("src/lib.rs", "")
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("bar/src/lib.rs", r#""#)
+        .build();
+
+    p.cargo("build")
+        .with_stderr(
+            "\
+[WARNING] patch for `bar` uses the features mechanism. \
+default-features and features will not take effect because the patch dependency does not support this mechanism
+[UPDATING] `[ROOT][..]` index
+[COMPILING] bar v0.1.0 ([CWD]/bar)
+[COMPILING] foo v0.0.1 ([CWD])
+[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
+",
+        )
+        .run();
+    p.cargo("build")
+        .with_stderr(
+            "\
+[WARNING] patch for `bar` uses the features mechanism. \
+default-features and features will not take effect because the patch dependency does not support this mechanism
+[FINISHED] [..]
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn add_patch_with_setting_default_features() {
+    Package::new("bar", "0.1.0").publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "0.0.1"
+            authors = []
+
+            [dependencies]
+            bar = "0.1.0"
+
+            [patch.crates-io]
+            bar = { path = 'bar', default-features = false, features = ["none_default_feature"] }
+        "#,
+        )
+        .file("src/lib.rs", "")
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("bar/src/lib.rs", r#""#)
+        .build();
+
+    p.cargo("build")
+        .with_stderr(
+            "\
+[WARNING] patch for `bar` uses the features mechanism. \
+default-features and features will not take effect because the patch dependency does not support this mechanism
+[UPDATING] `[ROOT][..]` index
+[COMPILING] bar v0.1.0 ([CWD]/bar)
+[COMPILING] foo v0.0.1 ([CWD])
+[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
+",
+        )
+        .run();
+    p.cargo("build")
+        .with_stderr(
+            "\
+[WARNING] patch for `bar` uses the features mechanism. \
+default-features and features will not take effect because the patch dependency does not support this mechanism
+[FINISHED] [..]
 ",
         )
         .run();

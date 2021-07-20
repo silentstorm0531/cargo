@@ -1,6 +1,7 @@
 //! Tests for the `cargo fix` command.
 
 use cargo::core::Edition;
+use cargo_test_support::compare::assert_match_exact;
 use cargo_test_support::git;
 use cargo_test_support::paths::CargoPathExt;
 use cargo_test_support::registry::{Dependency, Package};
@@ -28,7 +29,7 @@ fn do_not_fix_broken_builds() {
     p.cargo("fix --allow-no-vcs")
         .env("__CARGO_FIX_YOLO", "1")
         .with_status(101)
-        .with_stderr_contains("[ERROR] could not compile `foo`")
+        .with_stderr_contains("[ERROR] could not compile `foo` due to previous error")
         .run();
     assert!(p.read_file("src/lib.rs").contains("let mut x = 3;"));
 }
@@ -833,8 +834,6 @@ fn prepare_for_unstable() {
 [ERROR] cannot migrate src/lib.rs to edition {next}
 Edition {next} is unstable and not allowed in this release, consider trying the nightly release channel.
 error: could not compile `foo`
-
-To learn more, run the command again with --verbose.
 ", next=next))
         .run();
 
@@ -926,11 +925,10 @@ fn prepare_for_already_on_latest_unstable() {
 
     p.cargo("fix --edition --allow-no-vcs")
         .masquerade_as_nightly_cargo()
+        .with_stderr_contains("[CHECKING] foo [..]")
         .with_stderr_contains(&format!(
             "\
-[CHECKING] foo [..]
 [WARNING] `src/lib.rs` is already on the latest edition ({next_edition}), unable to migrate further
-[FINISHED] [..]
 ",
             next_edition = next_edition
         ))
@@ -962,11 +960,10 @@ fn prepare_for_already_on_latest_stable() {
         .build();
 
     p.cargo("fix --edition --allow-no-vcs")
+        .with_stderr_contains("[CHECKING] foo [..]")
         .with_stderr_contains(&format!(
             "\
-[CHECKING] foo [..]
 [WARNING] `src/lib.rs` is already on the latest edition ({latest_stable}), unable to migrate further
-[FINISHED] [..]
 ",
             latest_stable = latest_stable
         ))
@@ -1510,7 +1507,6 @@ fn rustfix_handles_multi_spans() {
 }
 
 #[cargo_test]
-#[ignore] // Broken, see https://github.com/rust-lang/rust/pull/86009
 fn fix_edition_2021() {
     // Can migrate 2021, even when lints are allowed.
     if !is_nightly() {
@@ -1554,4 +1550,50 @@ fn fix_edition_2021() {
         )
         .run();
     assert!(p.read_file("src/lib.rs").contains(r#"0..=100 => true,"#));
+}
+
+#[cargo_test]
+fn fix_shared_cross_workspace() {
+    // Fixing a file that is shared between multiple packages in the same workspace.
+    // Make sure two processes don't try to fix the same file at the same time.
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = ["foo", "bar"]
+            "#,
+        )
+        .file("foo/Cargo.toml", &basic_manifest("foo", "0.1.0"))
+        .file("foo/src/lib.rs", "pub mod shared;")
+        // This will fix both unused and bare trait.
+        .file("foo/src/shared.rs", "pub fn fixme(x: Box<&Fn() -> ()>) {}")
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file(
+            "bar/src/lib.rs",
+            r#"
+                #[path="../../foo/src/shared.rs"]
+                pub mod shared;
+            "#,
+        )
+        .build();
+
+    // The output here can be either of these two, depending on who runs first:
+    //     [FIXED] bar/src/../../foo/src/shared.rs (2 fixes)
+    //     [FIXED] foo/src/shared.rs (2 fixes)
+    p.cargo("fix --allow-no-vcs")
+        .with_stderr_unordered(
+            "\
+[CHECKING] foo v0.1.0 [..]
+[CHECKING] bar v0.1.0 [..]
+[FIXED] [..]foo/src/shared.rs (2 fixes)
+[FINISHED] [..]
+",
+        )
+        .run();
+
+    assert_match_exact(
+        "pub fn fixme(_x: Box<&dyn Fn() -> ()>) {}",
+        &p.read_file("foo/src/shared.rs"),
+    );
 }
